@@ -45,6 +45,17 @@ GitHub Pages alone won’t run the backend; use GitHub only to store code and de
 - `shared/` — timezone helpers, geocoding, schema types
 - `data/overrides.json` — manual status overrides
 
+## Publish to GitHub
+
+Git is initialized locally. To create the remote repo and push:
+
+```powershell
+gh auth login
+.\scripts\publish-to-github.ps1
+```
+
+Creates a public repo named **`toronto-drop-in`** under your GitHub account. Rename in the script if you prefer.
+
 ## License
 
-MIT (add a `LICENSE` file if you publish publicly).
+MIT — see [LICENSE](LICENSE).
