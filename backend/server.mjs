@@ -457,9 +457,20 @@ async function refreshCache() {
   return payload;
 }
 
-async function ensureFreshCache() {
+function scheduleBackgroundRefresh(existingCache) {
   if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = refreshCache()
+    .catch((err) => {
+      console.error("Background refresh failed:", err?.message ?? err);
+      return existingCache;
+    })
+    .finally(() => {
+      refreshInFlight = null;
+    });
+  return refreshInFlight;
+}
 
+async function ensureFreshCache({ waitForRefresh = false } = {}) {
   let cache;
   try {
     cache = await readJson(CACHE_PATH);
@@ -467,21 +478,21 @@ async function ensureFreshCache() {
     cache = null;
   }
 
+  const hasEvents = (cache?.events?.length ?? 0) > 0;
   const fetchedAtMs = cache?.fetchedAt ? new Date(cache.fetchedAt).getTime() : 0;
   const isStale = !fetchedAtMs || Number.isNaN(fetchedAtMs) || Date.now() - fetchedAtMs > CACHE_STALE_MS;
   const today = torontoTodayYmd();
   const dataTo = cache?.dataTo ?? null;
   const needsNewerDates = !dataTo || dataTo < today;
+  const shouldRefresh = !hasEvents || isStale || needsNewerDates;
 
-  if (!isStale && !needsNewerDates && (cache?.events?.length ?? 0) > 0) return cache;
+  if (shouldRefresh) {
+    const refreshPromise = scheduleBackgroundRefresh(cache);
+    if (!hasEvents && waitForRefresh) return refreshPromise;
+    if (!hasEvents) return cache;
+  }
 
-  refreshInFlight = refreshCache()
-    .catch(() => cache)
-    .finally(() => {
-      refreshInFlight = null;
-    });
-
-  return refreshInFlight;
+  return cache;
 }
 
 async function serveStatic(req, res) {
@@ -522,9 +533,31 @@ const server = http.createServer(async (req, res) => {
       const weekStart =
         url.searchParams.get("start") ?? toYYYYMMDD(mondayOfWeek(new Date()));
 
+      if (url.pathname === "/api/status" && req.method === "GET") {
+        let cache = null;
+        try {
+          cache = await readJson(CACHE_PATH);
+        } catch {
+          /* no cache yet */
+        }
+        return sendJson(res, 200, {
+          ready: (cache?.events?.length ?? 0) > 0,
+          refreshing: Boolean(refreshInFlight),
+          eventCount: cache?.events?.length ?? 0,
+          dataTo: cache?.dataTo ?? null,
+          fetchedAt: cache?.fetchedAt ?? null,
+        });
+      }
+
       if (url.pathname === "/api/schedule" && req.method === "GET") {
         const cache = await ensureFreshCache();
-        if (!cache) return sendJson(res, 500, { error: "Cache unavailable" });
+        if (!cache || (cache.events?.length ?? 0) === 0) {
+          return sendJson(res, 503, {
+            error: "Schedule cache not ready",
+            refreshing: Boolean(refreshInFlight),
+            hint: "First load on the server can take 1–2 minutes. Retry shortly.",
+          });
+        }
         const overrides = await readJson(OVERRIDES_PATH);
         const span = cacheDateSpan(cache.events);
         const filtered = {
@@ -544,7 +577,12 @@ const server = http.createServer(async (req, res) => {
 
       if (url.pathname === "/api/week" && req.method === "GET") {
         const cache = await ensureFreshCache();
-        if (!cache) return sendJson(res, 500, { error: "Cache unavailable" });
+        if (!cache || (cache.events?.length ?? 0) === 0) {
+          return sendJson(res, 503, {
+            error: "Schedule cache not ready",
+            refreshing: Boolean(refreshInFlight),
+          });
+        }
         const overrides = await readJson(OVERRIDES_PATH);
         const days = Math.min(14, Math.max(1, Number(url.searchParams.get("days") || "7")));
         const rangeEnd = toYYYYMMDD(addDays(new Date(`${weekStart}T00:00:00`), days));
@@ -654,6 +692,14 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, payload);
       }
 
+      if (url.pathname === "/api/refresh" && req.method === "GET") {
+        if (process.env.ALLOW_REFRESH !== "1") {
+          return sendJson(res, 403, { error: "Refresh disabled. Set ALLOW_REFRESH=1." });
+        }
+        scheduleBackgroundRefresh(null);
+        return sendJson(res, 202, { status: "Refresh started" });
+      }
+
       return sendJson(res, 404, { error: "Not found" });
     }
 
@@ -668,7 +714,10 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
-  ensureFreshCache().catch(() => {});
+  if (process.env.ALLOW_REFRESH === "1") {
+    console.log("Starting background schedule refresh…");
+    scheduleBackgroundRefresh(null).catch(() => {});
+  }
   setInterval(() => {
     ensureFreshCache().catch(() => {});
   }, CACHE_STALE_MS);

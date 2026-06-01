@@ -206,12 +206,25 @@ function statusClass(status) {
 
 async function loadSchedule() {
   const weekStart = toYYYYMMDD(mondayOfWeek(new Date()));
-  const trySchedule = await fetch("/api/schedule");
-  if (trySchedule.ok) return trySchedule.json();
+  const maxAttempts = 90;
 
-  const week = await fetch(`/api/week?start=${encodeURIComponent(weekStart)}&days=14`);
-  if (!week.ok) throw new Error("Could not load schedules");
-  return week.json();
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const trySchedule = await fetch("/api/schedule");
+    if (trySchedule.ok) return trySchedule.json();
+
+    if (trySchedule.status === 503) {
+      await new Promise((r) => setTimeout(r, 2000));
+      continue;
+    }
+
+    const week = await fetch(`/api/week?start=${encodeURIComponent(weekStart)}&days=14`);
+    if (week.ok) return week.json();
+    throw new Error("Could not load schedules");
+  }
+
+  throw new Error(
+    "Schedules are still loading on the server (first deploy can take 1–2 minutes). Please refresh the page."
+  );
 }
 
 function App() {
@@ -453,10 +466,10 @@ function App() {
         ? loadError
         : payload
           ? `${weekOffset === 0 ? "This week" : "Next week"} · ${selectedLabel} · ${selectedSport} · ${centreList.length} centres${locStatus === "ok" ? " nearby" : ""}`
-          : "Loading…"
+          : "Loading schedules… (first server load can take 1–2 minutes)"
     ),
 
-    centreList.length === 0
+    payload && centreList.length === 0
       ? h(
           "p",
           { className: "empty" },
