@@ -17,7 +17,8 @@ if ($LASTEXITCODE -ne 0) {
 
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
-if (git remote get-url origin 2>$null) {
+$hasOrigin = git remote 2>$null | Select-String -Pattern '^origin$' -Quiet
+if ($hasOrigin) {
   Write-Host "Remote origin already set. Pushing..."
   git push -u origin main
 } else {
