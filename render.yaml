@@ -1,0 +1,13 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: toronto-drop-in
+    runtime: node
+    plan: free
+    buildCommand: echo "Schedule data ships in data/cache.seed.json"
+    startCommand: node backend/server.mjs
+    envVars:
+      - key: ALLOW_REFRESH
+        value: "1"
+      - key: NODE_VERSION
+        value: "22"

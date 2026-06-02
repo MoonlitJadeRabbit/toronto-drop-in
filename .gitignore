@@ -1,6 +1,9 @@
 node_modules/
 .DS_Store
 
-# Local data/cache
+# Local runtime cache (regenerated on refresh)
 data/cache.json
+
+# Bundled snapshot for deploy — update with: node scripts/update-cache-seed.mjs
+!data/cache.seed.json
 

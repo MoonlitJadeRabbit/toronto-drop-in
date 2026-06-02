@@ -466,7 +466,7 @@ function App() {
         ? loadError
         : payload
           ? `${weekOffset === 0 ? "This week" : "Next week"} · ${selectedLabel} · ${selectedSport} · ${centreList.length} centres${locStatus === "ok" ? " nearby" : ""}`
-          : "Loading schedules… (first server load can take 1–2 minutes)"
+          : "Loading schedules…"
     ),
 
     payload && centreList.length === 0

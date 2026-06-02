@@ -1,5 +1,5 @@
 import http from "node:http";
-import { readFile, writeFile } from "node:fs/promises";
+import { access, copyFile, readFile, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import {
@@ -19,6 +19,7 @@ const ROOT = normalize(join(process.cwd()));
 const FRONTEND_DIR = join(ROOT, "frontend");
 const DATA_DIR = join(ROOT, "data");
 const CACHE_PATH = join(DATA_DIR, "cache.json");
+const CACHE_SEED_PATH = join(DATA_DIR, "cache.seed.json");
 const OVERRIDES_PATH = join(DATA_DIR, "overrides.json");
 
 const MIME_BY_EXT = {
@@ -457,6 +458,24 @@ async function refreshCache() {
   return payload;
 }
 
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Render free tier wipes disk on sleep — restore bundled schedules so the UI is instant. */
+async function bootstrapCacheFromSeed() {
+  if (await pathExists(CACHE_PATH)) return false;
+  if (!(await pathExists(CACHE_SEED_PATH))) return false;
+  await copyFile(CACHE_SEED_PATH, CACHE_PATH);
+  console.log("Restored schedule cache from cache.seed.json");
+  return true;
+}
+
 function scheduleBackgroundRefresh(existingCache) {
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = refreshCache()
@@ -712,14 +731,22 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-  if (process.env.ALLOW_REFRESH === "1") {
-    console.log("Starting background schedule refresh…");
-    scheduleBackgroundRefresh(null).catch(() => {});
-  }
-  setInterval(() => {
-    ensureFreshCache().catch(() => {});
-  }, CACHE_STALE_MS);
+async function startServer() {
+  await bootstrapCacheFromSeed();
+  server.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT}`);
+    if (process.env.ALLOW_REFRESH === "1") {
+      console.log("Starting background schedule refresh…");
+      scheduleBackgroundRefresh(null).catch(() => {});
+    }
+    setInterval(() => {
+      ensureFreshCache().catch(() => {});
+    }, CACHE_STALE_MS);
+  });
+}
+
+startServer().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });
 
