@@ -58,6 +58,17 @@ body {
   font-weight: 600;
 }
 
+.location-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.location-row .address-input {
+  flex: 1;
+  min-width: 0;
+}
+
 .address-input {
   width: 100%;
   padding: 12px 14px;
@@ -66,7 +77,46 @@ body {
   border-radius: 8px;
   background: var(--bg);
   color: var(--text);
-  margin-bottom: 8px;
+}
+
+.loc-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.loc-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.loc-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+}
+
+.loc-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.loc-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.loc-btn-icon {
+  display: block;
 }
 
 .address-input:focus {
@@ -92,6 +142,10 @@ body {
 
 .loc-hint.ok {
   color: var(--good);
+}
+
+.loc-hint.gps-fail {
+  color: var(--muted);
 }
 
 .empty {

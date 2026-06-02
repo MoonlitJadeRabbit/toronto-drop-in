@@ -40,6 +40,40 @@ const LS_THEME_KEY = "tdi:theme";
 const LS_FAVOURITES_KEY = "tdi:favourite-centres";
 const MAX_DISTANCE_KM = 30;
 
+function requestBrowserLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(Object.assign(new Error("unsupported"), { geoReason: "unsupported" }));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) =>
+        resolve({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        }),
+      (err) => {
+        const geoReason =
+          err?.code === 1
+            ? "permission"
+            : err?.code === 2
+              ? "unavailable"
+              : err?.code === 3
+                ? "timeout"
+                : "unknown";
+        reject(Object.assign(err ?? new Error("geolocation failed"), { geoReason }));
+      },
+      { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 }
+    );
+  });
+}
+
+function geoFailureReason(err) {
+  if (!window.isSecureContext) return "insecure";
+  if (err?.geoReason) return err.geoReason;
+  return "unknown";
+}
+
 function loadFavouriteIds() {
   try {
     const raw = localStorage.getItem(LS_FAVOURITES_KEY);
@@ -250,7 +284,46 @@ function App() {
   const [address, setAddress] = React.useState("");
   const [userLoc, setUserLoc] = React.useState(null);
   const [locLabel, setLocLabel] = React.useState("");
-  const [locStatus, setLocStatus] = React.useState(""); // idle | loading | ok | fail
+  const [locStatus, setLocStatus] = React.useState(""); // idle | loading | ok | fail | gps-fail
+  const [locGpsError, setLocGpsError] = React.useState(null); // permission | insecure | timeout | ...
+  const autoLocRef = React.useRef(null);
+
+  const applyAutoLocation = React.useCallback((coords) => {
+    autoLocRef.current = coords;
+    setUserLoc(coords);
+    setLocLabel("Your location");
+    setLocGpsError(null);
+    setLocStatus("ok");
+  }, []);
+
+  const restoreAutoLocation = React.useCallback(() => {
+    if (autoLocRef.current) {
+      setUserLoc(autoLocRef.current);
+      setLocLabel("Your location");
+      setLocStatus("ok");
+      return true;
+    }
+    return false;
+  }, []);
+
+  const locateUser = React.useCallback(
+    async ({ clearAddress = false } = {}) => {
+      if (clearAddress) setAddress("");
+      setLocStatus("loading");
+      setLocGpsError(null);
+      try {
+        applyAutoLocation(await requestBrowserLocation());
+      } catch (err) {
+        setLocStatus("gps-fail");
+        setLocGpsError(geoFailureReason(err));
+        setUserLoc(null);
+        setLocLabel("");
+      }
+    },
+    [applyAutoLocation]
+  );
+
+  const useNearMe = React.useCallback(() => locateUser({ clearAddress: true }), [locateUser]);
 
   const todayDow = React.useMemo(() => torontoTodayDow(), []);
   const todayYmd = React.useMemo(() => torontoTodayYmd(), []);
@@ -292,20 +365,30 @@ function App() {
   }, []);
 
   React.useEffect(() => {
+    locateUser();
+  }, [locateUser]);
+
+  React.useEffect(() => {
     const q = address.trim();
     const postal = normalizeCanadianPostalCode(q);
 
     if (q.length < 2 && !postal) {
+      if (restoreAutoLocation()) return;
       setUserLoc(null);
       setLocLabel("");
-      setLocStatus("");
+      setLocStatus((prev) =>
+        prev === "gps-fail" || prev === "loading" ? prev : ""
+      );
       return;
     }
 
     if (isPartialCanadianPostalCode(q)) {
+      if (restoreAutoLocation()) return;
       setUserLoc(null);
       setLocLabel("");
-      setLocStatus("");
+      setLocStatus((prev) =>
+        prev === "gps-fail" || prev === "loading" ? prev : ""
+      );
       return;
     }
 
@@ -330,7 +413,7 @@ function App() {
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [address]);
+  }, [address, restoreAutoLocation]);
 
   const eventsByCentre = React.useMemo(() => {
     const map = new Map();
@@ -393,11 +476,32 @@ function App() {
 
   const selectedLabel = WEEKDAYS.find((d) => d.dow === selectedDow)?.label ?? "";
 
+  const usingManualAddress = address.trim().length >= 2 || normalizeCanadianPostalCode(address.trim());
+
   let locHint = "";
-  if (locStatus === "loading") locHint = "Finding your location…";
-  else if (locStatus === "fail")
+  if (locStatus === "loading")
+    locHint = usingManualAddress
+      ? "Finding address…"
+      : "Allow location when your browser asks to sort centres nearest to you.";
+  else if (locStatus === "gps-fail") {
+    const gpsHints = {
+      insecure:
+        "Location only works on a secure connection (https). Enter an address below instead.",
+      permission:
+        "Location access is blocked. Allow it in your browser’s settings for this site, tap the pin to try again, or enter an address.",
+      timeout: "Could not get your location in time. Tap the pin to try again or enter an address.",
+      unavailable:
+        "Your device could not determine location. Try the pin again or enter an address.",
+      unsupported: "This browser does not support location. Enter an address below.",
+      unknown: "Could not use your location. Tap the pin to try again or enter an address.",
+    };
+    locHint = gpsHints[locGpsError] ?? gpsHints.unknown;
+  } else if (locStatus === "fail")
     locHint = "Not found — try a Toronto street address or postal code (e.g. M5V 2T6)";
-  else if (locStatus === "ok") locHint = `Nearest within ${MAX_DISTANCE_KM} km`;
+  else if (locStatus === "ok")
+    locHint = usingManualAddress
+      ? `Nearest within ${MAX_DISTANCE_KM} km`
+      : `Sorted nearest to you (within ${MAX_DISTANCE_KM} km)`;
 
   return h(
     "div",
@@ -414,16 +518,46 @@ function App() {
 
     h("h1", { className: "title" }, "Toronto drop-in sports"),
 
-    h("input", {
-      className: "address-input",
-      type: "text",
-      placeholder: "Street address or postal code (e.g. M5V 2T6)",
-      value: address,
-      onChange: (e) => setAddress(e.target.value),
-      autoComplete: "postal-code",
-      inputMode: "text",
-      spellCheck: false,
-    }),
+    h(
+      "div",
+      { className: "location-row" },
+      h("input", {
+        className: "address-input",
+        type: "text",
+        placeholder: "Optional: address or postal code (e.g. M5V 2T6)",
+        value: address,
+        onChange: (e) => setAddress(e.target.value),
+        autoComplete: "postal-code",
+        inputMode: "text",
+        spellCheck: false,
+        "aria-label": "Street address or postal code",
+      }),
+      h(
+        "button",
+        {
+          type: "button",
+          className: `loc-btn${locStatus === "ok" && !usingManualAddress ? " active" : ""}`,
+          onClick: useNearMe,
+          disabled: locStatus === "loading" && !usingManualAddress,
+          title: "Use my current location",
+          "aria-label": "Use my current location",
+        },
+        h(
+          "svg",
+          {
+            className: "loc-btn-icon",
+            viewBox: "0 0 24 24",
+            width: 20,
+            height: 20,
+            "aria-hidden": true,
+          },
+          h("path", {
+            fill: "currentColor",
+            d: "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 110-5 2.5 2.5 0 010 5z",
+          })
+        )
+      )
+    ),
     locHint ? h("p", { className: `loc-hint ${locStatus}` }, locHint) : null,
 
     h("p", { className: "tab-label" }, "Week"),
