@@ -37,7 +37,22 @@ function eventDayOfWeek(ev) {
 }
 
 const LS_THEME_KEY = "tdi:theme";
+const LS_FAVOURITES_KEY = "tdi:favourite-centres";
 const MAX_DISTANCE_KM = 30;
+
+function loadFavouriteIds() {
+  try {
+    const raw = localStorage.getItem(LS_FAVOURITES_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr.filter((id) => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveFavouriteIds(ids) {
+  localStorage.setItem(LS_FAVOURITES_KEY, JSON.stringify([...ids]));
+}
 
 const WEEKDAYS = [
   { dow: 1, label: "Mon" },
@@ -242,6 +257,17 @@ function App() {
   const [selectedDow, setSelectedDow] = React.useState(() => torontoTodayDow());
   const [selectedSport, setSelectedSport] = React.useState("Badminton");
   const [weekOffset, setWeekOffset] = React.useState(0); // 0 = this week, 1 = next week
+  const [favouriteIds, setFavouriteIds] = React.useState(() => loadFavouriteIds());
+
+  const toggleFavourite = React.useCallback((centreId) => {
+    setFavouriteIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(centreId)) next.delete(centreId);
+      else next.add(centreId);
+      saveFavouriteIds(next);
+      return next;
+    });
+  }, []);
 
   const week = React.useMemo(() => weekBounds(weekOffset), [weekOffset]);
 
@@ -335,17 +361,35 @@ function App() {
 
     rows = rows.filter((r) => r.sessions.length > 0);
 
-    if (userLoc && locStatus === "ok") {
-      rows = rows.filter(
-        (r) => r.distanceKm != null && r.distanceKm <= MAX_DISTANCE_KM
-      );
-      rows.sort((a, b) => a.distanceKm - b.distanceKm);
-    } else {
-      rows.sort((a, b) => a.centre.name.localeCompare(b.centre.name));
+    const favouriteRows = [];
+    const otherRows = [];
+    for (const row of rows) {
+      if (favouriteIds.has(row.centre.id)) favouriteRows.push(row);
+      else otherRows.push(row);
     }
 
-    return rows;
-  }, [payload, eventsByCentre, userLoc, locStatus]);
+    const sortByDistance = (a, b) => {
+      if (a.distanceKm == null && b.distanceKm == null) {
+        return a.centre.name.localeCompare(b.centre.name);
+      }
+      if (a.distanceKm == null) return 1;
+      if (b.distanceKm == null) return -1;
+      return a.distanceKm - b.distanceKm;
+    };
+
+    if (userLoc && locStatus === "ok") {
+      const nearby = otherRows.filter(
+        (r) => r.distanceKm != null && r.distanceKm <= MAX_DISTANCE_KM
+      );
+      nearby.sort(sortByDistance);
+      favouriteRows.sort(sortByDistance);
+      return [...favouriteRows, ...nearby];
+    }
+
+    favouriteRows.sort((a, b) => a.centre.name.localeCompare(b.centre.name));
+    otherRows.sort((a, b) => a.centre.name.localeCompare(b.centre.name));
+    return [...favouriteRows, ...otherRows];
+  }, [payload, eventsByCentre, userLoc, locStatus, favouriteIds]);
 
   const selectedLabel = WEEKDAYS.find((d) => d.dow === selectedDow)?.label ?? "";
 
@@ -474,7 +518,7 @@ function App() {
           "p",
           { className: "empty" },
           locStatus === "ok"
-            ? "No matching sessions nearby. Try next week, another sport, or day."
+            ? "No matching sessions nearby. Favourites still show if they have this sport today. Try another day or sport."
             : `No ${selectedSport} on ${selectedLabel} for ${weekOffset === 0 ? "this week" : "next week"}. Try another sport — Sundays are often lighter.`
         )
       : null,
@@ -482,16 +526,44 @@ function App() {
     h(
       "div",
       { className: "centre-list" },
-      ...centreList.map(({ centre, sessions, distanceKm }) =>
-        h(
+      ...centreList.map(({ centre, sessions, distanceKm }) => {
+        const isFavourite = favouriteIds.has(centre.id);
+        return h(
           "article",
-          { key: centre.id, className: "centre-row" },
+          {
+            key: centre.id,
+            className: `centre-row${isFavourite ? " centre-row-favourite" : ""}`,
+          },
           h(
             "div",
             { className: "centre-head" },
-            h("h2", null, centre.name),
+            h(
+              "div",
+              { className: "centre-title-wrap" },
+              h("h2", null, centre.name),
+              h(
+                "button",
+                {
+                  type: "button",
+                  className: `fav-btn${isFavourite ? " is-favourite" : ""}`,
+                  "aria-label": isFavourite
+                    ? `Remove ${centre.name} from favourites`
+                    : `Add ${centre.name} to favourites`,
+                  "aria-pressed": isFavourite,
+                  onClick: () => toggleFavourite(centre.id),
+                },
+                isFavourite ? "★" : "☆"
+              )
+            ),
             distanceKm != null
-              ? h("span", { className: "dist" }, formatDistance(distanceKm) + " away")
+              ? h(
+                  "span",
+                  { className: "dist" },
+                  formatDistance(distanceKm) + " away",
+                  isFavourite && distanceKm > MAX_DISTANCE_KM
+                    ? h("span", { className: "fav-pill" }, "Favourite")
+                    : null
+                )
               : h("span", { className: "dist muted" }, centre.address || "")
           ),
           h(
@@ -511,8 +583,8 @@ function App() {
               )
             )
           )
-        )
-      )
+        );
+      })
     )
   );
 }
