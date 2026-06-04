@@ -43,6 +43,143 @@ let refreshInFlight = /** @type {Promise<any> | null} */ (null);
 let coordsByLocationId = /** @type {Map<number, { lat: number, lng: number }> | null} */ (null);
 const geocodeCache = new Map();
 
+const TORONTO_VIEWBOX = "-79.64,43.58,-79.11,43.86";
+const NOMINATIM_HEADERS = {
+  "user-agent": "TorontoDropInTracker/0.1 (torontodropin.ca)",
+  accept: "application/json",
+};
+
+/** Nominatim often returns this for postalcode+Toronto — wrong for distance sorting. */
+function isGenericTorontoCentroid(lat, lng) {
+  return Math.abs(lat - 43.6534817) < 0.002 && Math.abs(lng - -79.3839347) < 0.002;
+}
+
+function inGtaBox(lat, lng) {
+  return lat >= 43.58 && lat <= 43.86 && lng >= -79.64 && lng <= -79.11;
+}
+
+async function fetchNominatimSearch(q, { bounded = true } = {}) {
+  const params = new URLSearchParams({
+    format: "json",
+    limit: "5",
+    countrycodes: "ca",
+    q,
+  });
+  if (bounded) {
+    params.set("viewbox", TORONTO_VIEWBOX);
+    params.set("bounded", "1");
+  }
+  const geoRes = await fetch(
+    `https://nominatim.openstreetmap.org/search?${params}`,
+    { headers: NOMINATIM_HEADERS }
+  );
+  if (!geoRes.ok) return [];
+  const hits = await geoRes.json();
+  return Array.isArray(hits) ? hits : [];
+}
+
+function pickNominatimHit(hits) {
+  for (const hit of hits) {
+    const lat = Number(hit.lat);
+    const lng = Number(hit.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (isGenericTorontoCentroid(lat, lng)) continue;
+    if (!inGtaBox(lat, lng)) continue;
+    return { lat, lng, label: hit.display_name };
+  }
+  return null;
+}
+
+async function geocodeCanadianPostal(postal) {
+  const compact = postal.replace(/\s/g, "");
+  const params = new URLSearchParams({
+    q: compact,
+    lang: "en",
+    keys: "nominatim,locate,fsa",
+  });
+  const res = await fetch(`https://geolocator.api.geo.ca/?${params}`, {
+    headers: NOMINATIM_HEADERS,
+  });
+  if (!res.ok) return null;
+  const hits = await res.json();
+  if (!Array.isArray(hits) || hits.length === 0) return null;
+
+  const fsa = postal.slice(0, 3);
+  const nominatim = hits.find(
+    (h) =>
+      h.key === "nominatim" &&
+      typeof h.lat === "number" &&
+      typeof h.lng === "number" &&
+      !isGenericTorontoCentroid(h.lat, h.lng) &&
+      inGtaBox(h.lat, h.lng)
+  );
+  if (nominatim) {
+    return {
+      lat: nominatim.lat,
+      lng: nominatim.lng,
+      label: `${postal}, Toronto`,
+    };
+  }
+
+  const locate =
+    hits.find(
+      (h) =>
+        h.key === "locate" &&
+        h.category === "PostalCode" &&
+        h.name === fsa &&
+        typeof h.lat === "number" &&
+        typeof h.lng === "number"
+    ) ??
+    hits.find(
+      (h) =>
+        h.key === "locate" &&
+        typeof h.lat === "number" &&
+        typeof h.lng === "number" &&
+        inGtaBox(h.lat, h.lng)
+    );
+  if (locate) {
+    return {
+      lat: locate.lat,
+      lng: locate.lng,
+      label: `${postal}, Toronto`,
+    };
+  }
+
+  const fsaHit = hits.find(
+    (h) =>
+      h.key === "fsa" &&
+      typeof h.lat === "number" &&
+      typeof h.lng === "number" &&
+      inGtaBox(h.lat, h.lng)
+  );
+  if (fsaHit) {
+    return {
+      lat: fsaHit.lat,
+      lng: fsaHit.lng,
+      label: `${postal}, Toronto`,
+    };
+  }
+
+  return null;
+}
+
+async function resolveGeocode(rawQ, built) {
+  if (built.type === "postal") {
+    const fromCanada = await geocodeCanadianPostal(built.postal);
+    if (fromCanada) return { ...fromCanada, postalCode: built.postal };
+
+    let picked = pickNominatimHit(await fetchNominatimSearch(built.q, { bounded: true }));
+    if (!picked) picked = pickNominatimHit(await fetchNominatimSearch(built.q, { bounded: false }));
+    if (picked) return { ...picked, label: `${built.postal}, Toronto`, postalCode: built.postal };
+    return null;
+  }
+
+  let picked = pickNominatimHit(await fetchNominatimSearch(built.q, { bounded: true }));
+  if (!picked) picked = pickNominatimHit(await fetchNominatimSearch(built.q, { bounded: false }));
+  if (!picked) return null;
+  return { lat: picked.lat, lng: picked.lng, label: picked.label };
+}
+
 async function getCoordsByLocationId() {
   if (coordsByLocationId) return coordsByLocationId;
   const featureUrl =
@@ -639,68 +776,11 @@ const server = http.createServer(async (req, res) => {
         if (geocodeCache.has(cacheKey)) return sendJson(res, 200, geocodeCache.get(cacheKey));
 
         const built = buildGeocodeQuery(rawQ);
-        const params = new URLSearchParams({
-          format: "json",
-          limit: "1",
-          countrycodes: "ca",
-        });
-        params.set("viewbox", "-79.64,43.58,-79.11,43.86");
-        params.set("bounded", "1");
+        const resolved = await resolveGeocode(rawQ, built);
+        if (!resolved) return sendJson(res, 404, { error: "Location not found" });
 
-        if (built.type === "postal") {
-          params.set("postalcode", built.postal.replace(/\s/g, ""));
-          params.set("city", "Toronto");
-          params.set("state", "Ontario");
-        } else {
-          params.set("q", built.q);
-        }
-
-        const geoUrl = `https://nominatim.openstreetmap.org/search?${params}`;
-        const geoRes = await fetch(geoUrl, {
-          headers: {
-            "user-agent": "TorontoDropInTracker/0.1 (local)",
-            accept: "application/json",
-          },
-        });
-        if (!geoRes.ok) return sendJson(res, 502, { error: "Geocode failed" });
-        let hits = await geoRes.json();
-
-        if ((!Array.isArray(hits) || hits.length === 0) && built.type === "postal") {
-          const fallback = new URLSearchParams({
-            format: "json",
-            limit: "1",
-            countrycodes: "ca",
-            viewbox: "-79.64,43.58,-79.11,43.86",
-            bounded: "1",
-            q: built.q,
-          });
-          const fbRes = await fetch(
-            `https://nominatim.openstreetmap.org/search?${fallback}`,
-            {
-              headers: {
-                "user-agent": "TorontoDropInTracker/0.1 (local)",
-                accept: "application/json",
-              },
-            }
-          );
-          if (fbRes.ok) hits = await fbRes.json();
-        }
-
-        if (!Array.isArray(hits) || hits.length === 0) {
-          return sendJson(res, 404, { error: "Location not found" });
-        }
-
-        const result = {
-          lat: Number(hits[0].lat),
-          lng: Number(hits[0].lon),
-          label:
-            built.type === "postal"
-              ? `${built.postal}, Toronto`
-              : hits[0].display_name,
-          postalCode: built.type === "postal" ? built.postal : undefined,
-        };
-        geocodeCache.set(cacheKey, result);
-        return sendJson(res, 200, result);
+        geocodeCache.set(cacheKey, resolved);
+        return sendJson(res, 200, resolved);
       }
 
       if (url.pathname === "/api/refresh" && req.method === "POST") {
