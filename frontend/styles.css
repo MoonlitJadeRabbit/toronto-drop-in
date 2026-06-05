@@ -394,6 +394,9 @@ body {
 .status.good {
   color: var(--good);
 }
+.status.progress {
+  color: var(--accent);
+}
 .status.warn {
   color: var(--warn);
 }

@@ -249,8 +249,26 @@ function formatDistance(km) {
 function statusClass(status) {
   const s = (status || "").toLowerCase();
   if (s === "available") return "good";
-  if (s === "cancelled" || s === "closed") return "bad";
+  if (s === "cancelled" || s === "closed" || s === "ended") return "bad";
+  if (s === "in progress") return "progress";
   return "warn";
+}
+
+/** @returns {null | "in-progress" | "ended"} */
+function sessionTimePhase(ev, nowMs = Date.now()) {
+  const start = new Date(ev.start).getTime();
+  const end = new Date(ev.end).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (nowMs >= end) return "ended";
+  if (nowMs >= start) return "in-progress";
+  return null;
+}
+
+function sessionDisplayStatus(ev, nowMs = Date.now()) {
+  const phase = sessionTimePhase(ev, nowMs);
+  if (phase === "ended") return { label: "Ended", className: "bad" };
+  if (phase === "in-progress") return { label: "In progress", className: "progress" };
+  return { label: ev.status || "—", className: statusClass(ev.status) };
 }
 
 async function loadSchedule() {
@@ -331,6 +349,12 @@ function App() {
   const [selectedSport, setSelectedSport] = React.useState("Badminton");
   const [weekOffset, setWeekOffset] = React.useState(0); // 0 = this week, 1 = next week
   const [favouriteIds, setFavouriteIds] = React.useState(() => loadFavouriteIds());
+  const [nowMs, setNowMs] = React.useState(() => Date.now());
+
+  React.useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const toggleFavourite = React.useCallback((centreId) => {
     setFavouriteIds((prev) => {
@@ -703,8 +727,9 @@ function App() {
           h(
             "ul",
             { className: "sessions" },
-            ...sessions.map((ev) =>
-              h(
+            ...sessions.map((ev) => {
+              const { label, className } = sessionDisplayStatus(ev, nowMs);
+              return h(
                 "li",
                 { key: ev.id },
                 h("span", { className: "sport" }, sessionTitle(ev)),
@@ -713,9 +738,9 @@ function App() {
                   { className: "when" },
                   `${formatShortDate(ev.start)} · ${formatTime(ev.start, ev.end)}`
                 ),
-                h("span", { className: `status ${statusClass(ev.status)}` }, ev.status || "—")
-              )
-            )
+                h("span", { className: `status ${className}` }, label)
+              );
+            })
           )
         );
       })
