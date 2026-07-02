@@ -280,7 +280,7 @@ async function loadSchedule() {
     if (trySchedule.ok) return trySchedule.json();
 
     if (trySchedule.status === 503) {
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, attempt < 3 ? 400 : 1500));
       continue;
     }
 
@@ -297,6 +297,7 @@ async function loadSchedule() {
 function App() {
   const [theme, setTheme] = React.useState(() => localStorage.getItem(LS_THEME_KEY) || "light");
   const [payload, setPayload] = React.useState(null);
+  const [scheduleLoading, setScheduleLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState(null);
 
   const [address, setAddress] = React.useState("");
@@ -380,10 +381,13 @@ function App() {
 
   React.useEffect(() => {
     (async () => {
+      setScheduleLoading(true);
       try {
         setPayload(await loadSchedule());
       } catch (e) {
         setLoadError(String(e?.message ?? e));
+      } finally {
+        setScheduleLoading(false);
       }
     })();
   }, []);
@@ -485,9 +489,14 @@ function App() {
     };
 
     if (userLoc && locStatus === "ok") {
-      const nearby = otherRows.filter(
+      let nearby = otherRows.filter(
         (r) => r.distanceKm != null && r.distanceKm <= MAX_DISTANCE_KM
       );
+      // If coords are missing, show matches anyway rather than a false empty state.
+      if (nearby.length === 0 && otherRows.length > 0) {
+        const missingDistance = otherRows.every((r) => r.distanceKm == null);
+        if (missingDistance) nearby = otherRows;
+      }
       nearby.sort(sortByDistance);
       favouriteRows.sort(sortByDistance);
       return [...favouriteRows, ...nearby];
@@ -501,6 +510,8 @@ function App() {
   const selectedLabel = WEEKDAYS.find((d) => d.dow === selectedDow)?.label ?? "";
 
   const usingManualAddress = address.trim().length >= 2 || normalizeCanadianPostalCode(address.trim());
+  const waitingOnLocation = locStatus === "loading" && !usingManualAddress;
+  const listStillLoading = scheduleLoading || (!payload && !loadError);
 
   let locHint = "";
   if (locStatus === "loading")
@@ -666,20 +677,28 @@ function App() {
       { className: "sub" },
       loadError
         ? loadError
-        : payload
-          ? `${weekOffset === 0 ? "This week" : "Next week"} · ${selectedLabel} · ${selectedSport} · ${centreList.length} centres${locStatus === "ok" ? " nearby" : ""}`
-          : "Loading schedules…"
+        : listStillLoading
+          ? "Loading schedules… (may take 1–2 minutes on first visit)"
+          : waitingOnLocation
+            ? `${weekOffset === 0 ? "This week" : "Next week"} · ${selectedLabel} · ${selectedSport} · sorting by your location…`
+            : `${weekOffset === 0 ? "This week" : "Next week"} · ${selectedLabel} · ${selectedSport} · ${centreList.length} centres${locStatus === "ok" ? " nearby" : ""}`
     ),
 
-    payload && centreList.length === 0
+    listStillLoading
       ? h(
           "p",
-          { className: "empty" },
-          locStatus === "ok"
-            ? "No matching sessions nearby. Favourites still show if they have this sport today. Try another day or sport."
-            : `No ${selectedSport} on ${selectedLabel} for ${weekOffset === 0 ? "this week" : "next week"}. Try another sport — Sundays are often lighter.`
+          { className: "empty loading-msg" },
+          "Loading community centres… This can take 1–2 minutes the first time the server wakes up."
         )
-      : null,
+      : !waitingOnLocation && payload && centreList.length === 0
+        ? h(
+            "p",
+            { className: "empty" },
+            locStatus === "ok"
+              ? "No matching sessions nearby. Favourites still show if they have this sport today. Try another day or sport."
+              : `No ${selectedSport} on ${selectedLabel} for ${weekOffset === 0 ? "this week" : "next week"}. Try another sport — Sundays are often lighter.`
+          )
+        : null,
 
     h(
       "div",

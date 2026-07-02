@@ -37,6 +37,7 @@ const LIVE_ALERTS_TTL_MS = 30_000;
 let liveAlertsCache = /** @type {{ fetchedAtMs: number, byLocationId: Map<number, any> } | null} */ (
   null
 );
+let liveAlertsInFlight = /** @type {Promise<Map<number, any>> | null} */ (null);
 
 const CACHE_STALE_MS = 6 * 60 * 60 * 1000; // 6 hours
 let refreshInFlight = /** @type {Promise<any> | null} */ (null);
@@ -200,6 +201,10 @@ async function getCoordsByLocationId() {
 }
 
 async function enrichCentresWithCoordsAsync(centres) {
+  const needsLookup = centres.some(
+    (c) => typeof c.lat !== "number" || typeof c.lng !== "number"
+  );
+  if (!needsLookup) return centres;
   const map = await getCoordsByLocationId();
   return centres.map((c) => {
     if (typeof c.lat === "number" && typeof c.lng === "number") return c;
@@ -310,7 +315,16 @@ async function getLiveCentreAlerts() {
   if (liveAlertsCache && now - liveAlertsCache.fetchedAtMs < LIVE_ALERTS_TTL_MS) {
     return liveAlertsCache.byLocationId;
   }
+  // Never block schedule responses on a live feed fetch — use stale/empty and refresh in background.
+  if (!liveAlertsInFlight) {
+    liveAlertsInFlight = fetchLiveCentreAlerts().finally(() => {
+      liveAlertsInFlight = null;
+    });
+  }
+  return liveAlertsCache?.byLocationId ?? new Map();
+}
 
+async function fetchLiveCentreAlerts() {
   const url = "https://www.toronto.ca/data/parks/live/centres.json";
   let byLocationId = new Map();
   try {
@@ -332,7 +346,7 @@ async function getLiveCentreAlerts() {
     // Best-effort; keep empty.
   }
 
-  liveAlertsCache = { fetchedAtMs: now, byLocationId };
+  liveAlertsCache = { fetchedAtMs: Date.now(), byLocationId };
   return byLocationId;
 }
 
@@ -813,6 +827,7 @@ const server = http.createServer(async (req, res) => {
 
 async function startServer() {
   await bootstrapCacheFromSeed();
+  fetchLiveCentreAlerts().catch(() => {});
   server.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
     if (process.env.ALLOW_REFRESH === "1") {

@@ -154,6 +154,10 @@ body {
   padding: 16px 0;
 }
 
+.loading-msg {
+  color: var(--muted);
+}
+
 .tab-label {
   margin: 0 0 6px;
   font-size: 12px;
