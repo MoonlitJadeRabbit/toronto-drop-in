@@ -230,6 +230,10 @@ function eventInWeek(ev, startYmd, endYmd) {
   return ld >= startYmd && ld < endYmd;
 }
 
+function weekHasAnyEvents(payload, startYmd, endYmd) {
+  return (payload?.events ?? []).some((ev) => eventInWeek(ev, startYmd, endYmd));
+}
+
 function haversineKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
   const toRad = (x) => (x * Math.PI) / 180;
@@ -298,7 +302,9 @@ function App() {
   const [theme, setTheme] = React.useState(() => localStorage.getItem(LS_THEME_KEY) || "light");
   const [payload, setPayload] = React.useState(null);
   const [scheduleLoading, setScheduleLoading] = React.useState(true);
+  const [serverRefreshing, setServerRefreshing] = React.useState(false);
   const [loadError, setLoadError] = React.useState(null);
+  const wasRefreshingRef = React.useRef(false);
 
   const [address, setAddress] = React.useState("");
   const [userLoc, setUserLoc] = React.useState(null);
@@ -374,23 +380,53 @@ function App() {
     return (payload?.events ?? []).some((ev) => eventInWeek(ev, nw.startYmd, nw.endYmd));
   }, [payload]);
 
+  const reloadSchedule = React.useCallback(async () => {
+    setScheduleLoading(true);
+    setLoadError(null);
+    try {
+      setPayload(await loadSchedule());
+    } catch (e) {
+      setLoadError(String(e?.message ?? e));
+    } finally {
+      setScheduleLoading(false);
+    }
+  }, []);
+
   React.useEffect(() => {
     document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
     localStorage.setItem(LS_THEME_KEY, theme);
   }, [theme]);
 
   React.useEffect(() => {
-    (async () => {
-      setScheduleLoading(true);
+    reloadSchedule();
+  }, [reloadSchedule]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    async function pollStatus() {
       try {
-        setPayload(await loadSchedule());
-      } catch (e) {
-        setLoadError(String(e?.message ?? e));
-      } finally {
-        setScheduleLoading(false);
+        const res = await fetch("/api/status");
+        if (!res.ok || cancelled) return;
+        const st = await res.json();
+        const refreshing = Boolean(st.refreshing);
+        setServerRefreshing(refreshing);
+        if (wasRefreshingRef.current && !refreshing && st.ready) {
+          await reloadSchedule();
+        }
+        wasRefreshingRef.current = refreshing;
+      } catch {
+        /* best-effort */
       }
-    })();
-  }, []);
+    }
+
+    pollStatus();
+    const id = setInterval(pollStatus, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [reloadSchedule]);
 
   React.useEffect(() => {
     locateUser();
@@ -511,7 +547,16 @@ function App() {
 
   const usingManualAddress = address.trim().length >= 2 || normalizeCanadianPostalCode(address.trim());
   const waitingOnLocation = locStatus === "loading" && !usingManualAddress;
-  const listStillLoading = scheduleLoading || (!payload && !loadError);
+  const cacheStaleForView = Boolean(payload?.dataTo && week.startYmd > payload.dataTo);
+  const noEventsInViewWeek = Boolean(
+    payload && !weekHasAnyEvents(payload, week.startYmd, week.endYmd)
+  );
+  const waitingOnFreshData =
+    (serverRefreshing || cacheStaleForView) && noEventsInViewWeek && !loadError;
+  const listStillLoading =
+    scheduleLoading ||
+    (!payload && !loadError) ||
+    (waitingOnFreshData && centreList.length === 0);
 
   let locHint = "";
   if (locStatus === "loading")
