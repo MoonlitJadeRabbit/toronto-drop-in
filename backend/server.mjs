@@ -31,6 +31,8 @@ const MIME_BY_EXT = {
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".ico": "image/x-icon",
+  ".txt": "text/plain; charset=utf-8",
+  ".xml": "application/xml; charset=utf-8",
 };
 
 const LIVE_ALERTS_TTL_MS = 30_000;
@@ -676,23 +678,17 @@ async function serveStatic(req, res) {
     : join(FRONTEND_DIR, safePath);
   const ext = extname(filePath);
 
-  const stream = createReadStream(filePath);
-  let responded = false;
+  try {
+    await access(filePath);
+  } catch {
+    return sendText(res, 404, "Not found");
+  }
 
-  stream.on("error", () => {
-    if (responded) return;
-    responded = true;
-    if (!res.headersSent) sendText(res, 404, "Not found");
-    else res.end();
-  });
-
-  if (responded) return;
-  responded = true;
   res.writeHead(200, {
     "content-type": MIME_BY_EXT[ext] ?? "application/octet-stream",
     "cache-control": "no-store",
   });
-  stream.pipe(res);
+  createReadStream(filePath).pipe(res);
 }
 
 const server = http.createServer(async (req, res) => {
